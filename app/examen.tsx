@@ -1,39 +1,217 @@
 /**
  * Pantalla del examen (ExamScreen).
  * Interfaz principal donde el usuario responde las preguntas una por una.
- * Muestra temporizador si esta habilitado, indicador de progreso y opciones de respuesta.
+ * Incluye temporizador, auto-guardado, y finalizacion automatica por tiempo.
  */
 
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, Alert } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { usarTema } from '@/src/tema';
 import { espaciado, bordes, fuentes } from '@/src/tema/colores';
+import { UMBRAL_TIEMPO_BAJO, INTERVALO_GUARDADO_TIEMPO } from '@/src/utils/constants';
+import { formatearTiempo } from '@/src/utils/helpers';
+import {
+  obtenerExamenEnProgreso,
+  guardarExamenEnProgreso,
+  limpiarExamenEnProgreso,
+  guardarEnHistorial,
+  registrarRespuesta,
+  avanzarPregunta,
+  finalizarPorTiempo,
+  actualizarTiempo,
+  obtenerPreguntaActual,
+  esSesionFinalizada,
+  generarEstadisticas,
+} from '@/src/services';
+import { SesionExamen, EntradaHistorial } from '@/src/models';
+import { generarId } from '@/src/utils/helpers';
 
 export default function PantallaExamen() {
   const tema = usarTema();
   const router = useRouter();
+  const { continuar } = useLocalSearchParams<{ continuar?: string }>();
 
-  /* Estado skeleton - se conectara con ExamEngineService en Fase 11 */
+  const [sesion, setSesion] = useState<SesionExamen | null>(null);
   const [opcionSeleccionada, setOpcionSeleccionada] = useState<number | null>(null);
+  const [cargando, setCargando] = useState(true);
 
-  const preguntaActual = 1;
-  const totalPreguntas = 10;
-  const textoPregunta = 'Pregunta de ejemplo - Se cargara con datos reales';
-  const opciones = ['Opcion A', 'Opcion B', 'Opcion C', 'Opcion D'];
+  const intervaloTemporizador = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervaloGuardado = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sesionRef = useRef<SesionExamen | null>(null);
 
   const estilos = crearEstilos(tema);
+
+  /* Mantener ref sincronizada con el estado */
+  useEffect(() => {
+    sesionRef.current = sesion;
+  }, [sesion]);
+
+  /* Cargar sesion (nueva o reanudada) */
+  useEffect(() => {
+    const cargar = async () => {
+      try {
+        const sesionGuardada = await obtenerExamenEnProgreso();
+        if (sesionGuardada && sesionGuardada.estado === 'en_progreso') {
+          setSesion(sesionGuardada);
+          setOpcionSeleccionada(null);
+        } else {
+          Alert.alert('Error', 'No se encontro el examen.');
+          router.replace('/');
+        }
+      } catch (error) {
+        console.error('Error al cargar sesion:', error);
+        router.replace('/');
+      } finally {
+        setCargando(false);
+      }
+    };
+    cargar();
+  }, [continuar, router]);
+
+  /* Temporizador */
+  useEffect(() => {
+    if (!sesion || !sesion.examen.configuracion.tiempoLimitado || sesion.tiempoRestante === null) {
+      return;
+    }
+
+    if (esSesionFinalizada(sesion)) return;
+
+    intervaloTemporizador.current = setInterval(() => {
+      setSesion(prev => {
+        if (!prev || prev.tiempoRestante === null || prev.tiempoRestante <= 0) {
+          return prev;
+        }
+
+        const nuevoTiempo = prev.tiempoRestante - 1;
+
+        if (nuevoTiempo <= 0) {
+          /* Tiempo agotado */
+          if (intervaloTemporizador.current) {
+            clearInterval(intervaloTemporizador.current);
+          }
+          const sesionFinalizada = finalizarPorTiempo(prev);
+          finalizarExamen(sesionFinalizada);
+          return sesionFinalizada;
+        }
+
+        return actualizarTiempo(prev, nuevoTiempo);
+      });
+    }, 1000);
+
+    return () => {
+      if (intervaloTemporizador.current) {
+        clearInterval(intervaloTemporizador.current);
+      }
+    };
+  }, [sesion?.examen.configuracion.tiempoLimitado, sesion?.estado]);
+
+  /* Auto-guardado periodico del tiempo */
+  useEffect(() => {
+    if (!sesion || !sesion.examen.configuracion.tiempoLimitado) return;
+
+    intervaloGuardado.current = setInterval(() => {
+      if (sesionRef.current && sesionRef.current.estado === 'en_progreso') {
+        guardarExamenEnProgreso(sesionRef.current);
+      }
+    }, INTERVALO_GUARDADO_TIEMPO);
+
+    return () => {
+      if (intervaloGuardado.current) {
+        clearInterval(intervaloGuardado.current);
+      }
+    };
+  }, [sesion?.examen.configuracion.tiempoLimitado]);
+
+  /* Finalizar examen y guardar en historial */
+  const finalizarExamen = useCallback(async (sesionFinalizada: SesionExamen) => {
+    try {
+      const estadisticas = generarEstadisticas(sesionFinalizada);
+
+      const entrada: EntradaHistorial = {
+        id: generarId(),
+        archivoId: sesionFinalizada.examen.archivoId,
+        fecha: Date.now(),
+        calificacion: estadisticas.calificacionFinal,
+        respuestasCorrectas: estadisticas.respuestasCorrectas,
+        respuestasIncorrectas: estadisticas.respuestasIncorrectas,
+        tiempoUtilizado: estadisticas.tiempoUtilizado,
+        respuestas: sesionFinalizada.respuestas,
+        preguntas: sesionFinalizada.examen.preguntas,
+      };
+
+      await guardarEnHistorial(entrada);
+      await limpiarExamenEnProgreso();
+
+      router.replace({
+        pathname: '/resultados',
+        params: {
+          calificacion: String(estadisticas.calificacionFinal),
+          correctas: String(estadisticas.respuestasCorrectas),
+          incorrectas: String(estadisticas.respuestasIncorrectas),
+          porcentaje: String(estadisticas.porcentajeAcierto),
+          tiempoUtilizado: estadisticas.tiempoUtilizado !== null ? String(estadisticas.tiempoUtilizado) : '',
+          entradaId: entrada.id,
+          archivoId: sesionFinalizada.examen.archivoId,
+        },
+      });
+    } catch (error) {
+      console.error('Error al finalizar examen:', error);
+    }
+  }, [router]);
+
+  /* Manejar seleccion de opcion */
+  const manejarSeleccionar = (indice: number) => {
+    setOpcionSeleccionada(indice);
+  };
+
+  /* Manejar boton siguiente */
+  const manejarSiguiente = async () => {
+    if (!sesion || opcionSeleccionada === null) return;
+
+    /* Registrar respuesta */
+    let sesionActualizada = registrarRespuesta(sesion, opcionSeleccionada);
+
+    /* Avanzar pregunta */
+    sesionActualizada = avanzarPregunta(sesionActualizada);
+
+    /* Guardar progreso */
+    await guardarExamenEnProgreso(sesionActualizada);
+
+    if (esSesionFinalizada(sesionActualizada)) {
+      /* Examen completado */
+      if (intervaloTemporizador.current) {
+        clearInterval(intervaloTemporizador.current);
+      }
+      await finalizarExamen(sesionActualizada);
+    } else {
+      /* Siguiente pregunta */
+      setSesion(sesionActualizada);
+      setOpcionSeleccionada(null);
+    }
+  };
+
+  if (cargando || !sesion) return null;
+
+  const pregunta = obtenerPreguntaActual(sesion);
+  const totalPreguntas = sesion.examen.preguntas.length;
+  const tiempoBajo = sesion.tiempoRestante !== null && sesion.tiempoRestante <= UMBRAL_TIEMPO_BAJO;
 
   return (
     <SafeAreaView style={[estilos.contenedor, { backgroundColor: tema.fondo }]}>
       {/* Barra de progreso y temporizador */}
       <View style={estilos.barraSuperior}>
         <Text style={[estilos.progreso, { color: tema.texto }]}>
-          {preguntaActual} de {totalPreguntas}
+          {sesion.preguntaActual + 1} de {totalPreguntas}
         </Text>
-        <Text style={[estilos.temporizador, { color: tema.secundario }]}>
-          --:--
-        </Text>
+        {sesion.examen.configuracion.tiempoLimitado && sesion.tiempoRestante !== null && (
+          <Text style={[
+            estilos.temporizador,
+            { color: tiempoBajo ? tema.error : tema.secundario },
+          ]}>
+            {formatearTiempo(sesion.tiempoRestante)}
+          </Text>
+        )}
       </View>
 
       {/* Barra de progreso visual */}
@@ -43,22 +221,31 @@ export default function PantallaExamen() {
             estilos.barraProgresoRelleno,
             {
               backgroundColor: tema.primario,
-              width: `${(preguntaActual / totalPreguntas) * 100}%`,
+              width: `${((sesion.preguntaActual + 1) / totalPreguntas) * 100}%`,
             },
           ]}
         />
       </View>
 
+      {/* Advertencia de tiempo bajo */}
+      {tiempoBajo && (
+        <View style={[estilos.advertenciaTiempo, { backgroundColor: tema.error + '20' }]}>
+          <Text style={[estilos.textoAdvertencia, { color: tema.error }]}>
+            Quedan menos de {UMBRAL_TIEMPO_BAJO} segundos
+          </Text>
+        </View>
+      )}
+
       {/* Pregunta */}
       <View style={estilos.contenidoPregunta}>
         <Text style={[estilos.textoPregunta, { color: tema.texto }]}>
-          {textoPregunta}
+          {pregunta.pregunta}
         </Text>
       </View>
 
       {/* Opciones */}
       <View style={estilos.zonaOpciones}>
-        {opciones.map((opcion, indice) => {
+        {pregunta.opciones.map((opcion, indice) => {
           const seleccionada = opcionSeleccionada === indice;
           return (
             <TouchableOpacity
@@ -70,7 +257,7 @@ export default function PantallaExamen() {
                   borderColor: seleccionada ? tema.primario : tema.borde,
                 },
               ]}
-              onPress={() => setOpcionSeleccionada(indice)}
+              onPress={() => manejarSeleccionar(indice)}
               activeOpacity={0.7}
             >
               <View style={[
@@ -99,10 +286,7 @@ export default function PantallaExamen() {
               backgroundColor: opcionSeleccionada !== null ? tema.primario : tema.borde,
             },
           ]}
-          onPress={() => {
-            /* Se implementara en Fase 11 */
-            router.push('/resultados');
-          }}
+          onPress={manejarSiguiente}
           disabled={opcionSeleccionada === null}
           activeOpacity={0.8}
         >
@@ -110,7 +294,7 @@ export default function PantallaExamen() {
             estilos.textoBotonSiguiente,
             { color: opcionSeleccionada !== null ? '#FFFFFF' : tema.textoDeshabilitado },
           ]}>
-            Siguiente
+            {sesion.preguntaActual === totalPreguntas - 1 ? 'Finalizar' : 'Siguiente'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -148,6 +332,17 @@ function crearEstilos(tema: ReturnType<typeof usarTema>) {
     barraProgresoRelleno: {
       height: '100%',
       borderRadius: bordes.completo,
+    },
+    advertenciaTiempo: {
+      marginHorizontal: espaciado.lg,
+      marginTop: espaciado.md,
+      padding: espaciado.sm,
+      borderRadius: bordes.md,
+      alignItems: 'center',
+    },
+    textoAdvertencia: {
+      fontSize: fuentes.sm,
+      fontWeight: '600',
     },
     contenidoPregunta: {
       paddingHorizontal: espaciado.xl,
