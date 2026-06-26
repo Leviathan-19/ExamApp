@@ -1,25 +1,39 @@
 /**
  * Pantalla de resultados (ResultsScreen).
  * Muestra la calificacion final, estadisticas y opciones post-examen.
+ * Recibe datos por parametros de navegacion desde la pantalla de examen.
  */
 
 import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { usarTema } from '@/src/tema';
 import { espaciado, bordes, fuentes } from '@/src/tema/colores';
+import { formatearTiempo } from '@/src/utils/helpers';
 
 export default function PantallaResultados() {
   const tema = usarTema();
   const router = useRouter();
 
-  /* Datos skeleton - se conectaran en Fase 14 */
-  const calificacion = 0;
-  const correctas = 0;
-  const incorrectas = 0;
-  const porcentaje = 0;
-  const tiempoUtilizado: string | null = null;
+  const params = useLocalSearchParams<{
+    calificacion: string;
+    correctas: string;
+    incorrectas: string;
+    porcentaje: string;
+    tiempoUtilizado: string;
+    entradaId: string;
+    archivoId: string;
+  }>();
+
+  const calificacion = parseFloat(params.calificacion) || 0;
+  const correctas = parseInt(params.correctas) || 0;
+  const incorrectas = parseInt(params.incorrectas) || 0;
+  const porcentaje = parseFloat(params.porcentaje) || 0;
+  const tiempoUtilizado = params.tiempoUtilizado ? parseInt(params.tiempoUtilizado) : null;
 
   const estilos = crearEstilos(tema);
+
+  /* Determinar color de calificacion segun resultado */
+  const colorCalificacion = calificacion >= 14 ? tema.exito : calificacion >= 10 ? tema.advertencia : tema.error;
 
   return (
     <SafeAreaView style={[estilos.contenedor, { backgroundColor: tema.fondo }]}>
@@ -31,7 +45,7 @@ export default function PantallaResultados() {
 
         {/* Calificacion principal */}
         <View style={[estilos.tarjetaCalificacion, { backgroundColor: tema.superficie, borderColor: tema.borde }]}>
-          <Text style={[estilos.calificacionNumero, { color: tema.primarioClaro }]}>
+          <Text style={[estilos.calificacionNumero, { color: colorCalificacion }]}>
             {calificacion.toFixed(1)}
           </Text>
           <Text style={[estilos.calificacionEscala, { color: tema.textoSecundario }]}>
@@ -56,9 +70,9 @@ export default function PantallaResultados() {
         </View>
 
         {/* Tiempo utilizado */}
-        {tiempoUtilizado && (
+        {tiempoUtilizado !== null && (
           <Text style={[estilos.tiempo, { color: tema.textoSecundario }]}>
-            Tiempo utilizado: {tiempoUtilizado}
+            Tiempo utilizado: {formatearTiempo(tiempoUtilizado)}
           </Text>
         )}
       </View>
@@ -67,7 +81,13 @@ export default function PantallaResultados() {
       <View style={estilos.zonaBotones}>
         <TouchableOpacity
           style={[estilos.botonPrimario, { backgroundColor: tema.primario }]}
-          onPress={() => router.push('/revision')}
+          onPress={() => router.push({
+            pathname: '/revision',
+            params: {
+              entradaId: params.entradaId,
+              archivoId: params.archivoId,
+            },
+          })}
           activeOpacity={0.8}
         >
           <Text style={estilos.textoBotonPrimario}>Revisar prueba</Text>

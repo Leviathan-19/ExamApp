@@ -1,29 +1,117 @@
 /**
  * Pantalla de configuracion del examen (ConfigScreen).
  * Permite al usuario configurar los parametros antes de iniciar el examen:
- * cantidad de preguntas, tiempo, aleatoriedad.
+ * cantidad de preguntas, tiempo limitado, aleatoriedad.
+ * Genera el examen y navega a la pantalla de examen.
  */
 
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, Switch, TextInput } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, Switch, TextInput, Alert, ScrollView } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useState, useEffect, useMemo } from 'react';
 import { usarTema } from '@/src/tema';
 import { espaciado, bordes, fuentes } from '@/src/tema/colores';
+import { MIN_SEGUNDOS_POR_PREGUNTA, MAX_SEGUNDOS_POR_PREGUNTA } from '@/src/utils/constants';
+import { formatearTiempo } from '@/src/utils/helpers';
+import { obtenerArchivoPorId, generarExamen, iniciarSesion, guardarExamenEnProgreso } from '@/src/services';
+import { ArchivoExamen, ConfiguracionExamen } from '@/src/models';
 
 export default function PantallaConfiguracion() {
   const tema = usarTema();
   const router = useRouter();
+  const { archivoId } = useLocalSearchParams<{ archivoId: string }>();
 
-  /* Estado de la configuracion - los valores reales vendran de la Fase 9 */
-  const [cantidadPreguntas, setCantidadPreguntas] = useState('10');
+  const [archivo, setArchivo] = useState<ArchivoExamen | null>(null);
+  const [cantidadPreguntas, setCantidadPreguntas] = useState('');
   const [tiempoLimitado, setTiempoLimitado] = useState(false);
   const [segundosPorPregunta, setSegundosPorPregunta] = useState('60');
   const [aleatorizarPreguntas, setAleatorizarPreguntas] = useState(true);
   const [aleatorizarOpciones, setAleatorizarOpciones] = useState(true);
 
-  const totalDisponible = 0; /* Se conectara en Fase 9 */
-
   const estilos = crearEstilos(tema);
+
+  /* Cargar informacion del archivo */
+  useEffect(() => {
+    const cargar = async () => {
+      if (!archivoId) return;
+      const arch = await obtenerArchivoPorId(archivoId);
+      if (arch) {
+        setArchivo(arch);
+        setCantidadPreguntas(String(arch.totalPreguntas));
+      } else {
+        Alert.alert('Error', 'No se encontro el archivo.');
+        router.back();
+      }
+    };
+    cargar();
+  }, [archivoId, router]);
+
+  /* Calcular tiempo total */
+  const tiempoTotal = useMemo(() => {
+    if (!tiempoLimitado) return 0;
+    const cantidad = parseInt(cantidadPreguntas) || 0;
+    const segundos = parseInt(segundosPorPregunta) || 0;
+    return cantidad * segundos;
+  }, [cantidadPreguntas, segundosPorPregunta, tiempoLimitado]);
+
+  /* Validar e iniciar examen */
+  const manejarIniciar = async () => {
+    if (!archivo) return;
+
+    const cantidad = parseInt(cantidadPreguntas);
+
+    /* Validar cantidad de preguntas */
+    if (isNaN(cantidad) || cantidad < 1 || cantidad > archivo.totalPreguntas) {
+      Alert.alert(
+        'Error de configuracion',
+        `El numero de preguntas debe ser entre 1 y ${archivo.totalPreguntas} (total disponible).`,
+      );
+      return;
+    }
+
+    /* Validar tiempo por pregunta */
+    if (tiempoLimitado) {
+      const segundos = parseInt(segundosPorPregunta);
+      if (isNaN(segundos) || segundos < MIN_SEGUNDOS_POR_PREGUNTA || segundos > MAX_SEGUNDOS_POR_PREGUNTA) {
+        Alert.alert(
+          'Error de configuracion',
+          `El tiempo por pregunta debe ser entre ${MIN_SEGUNDOS_POR_PREGUNTA} y ${MAX_SEGUNDOS_POR_PREGUNTA} segundos.`,
+        );
+        return;
+      }
+    }
+
+    /* Crear configuracion */
+    const configuracion: ConfiguracionExamen = {
+      cantidadPreguntas: cantidad,
+      tiempoLimitado,
+      segundosPorPregunta: tiempoLimitado ? parseInt(segundosPorPregunta) : 0,
+      tiempoTotal,
+      aleatorizarPreguntas,
+      aleatorizarOpciones,
+    };
+
+    /* Generar examen */
+    const examenGenerado = generarExamen(
+      archivo.contenido,
+      configuracion,
+      archivo.id,
+      archivo.nombre,
+    );
+
+    /* Iniciar sesion */
+    const sesion = iniciarSesion(examenGenerado);
+
+    /* Guardar en progreso */
+    await guardarExamenEnProgreso(sesion);
+
+    /* Navegar al examen */
+    router.push({
+      pathname: '/examen',
+      params: { sesionId: sesion.id },
+    });
+  };
+
+  if (!archivo) return null;
 
   return (
     <SafeAreaView style={[estilos.contenedor, { backgroundColor: tema.fondo }]}>
@@ -36,22 +124,27 @@ export default function PantallaConfiguracion() {
         <View style={{ width: 50 }} />
       </View>
 
-      <View style={estilos.contenido}>
+      <ScrollView style={estilos.contenido} contentContainerStyle={estilos.contenidoScroll}>
+        {/* Nombre del archivo */}
+        <Text style={[estilos.nombreArchivo, { color: tema.texto }]} numberOfLines={1}>
+          {archivo.nombre}
+        </Text>
+
         {/* Total disponible */}
         <Text style={[estilos.infoTotal, { color: tema.textoSecundario }]}>
-          Total de preguntas disponibles: {totalDisponible}
+          Total de preguntas disponibles: {archivo.totalPreguntas}
         </Text>
 
         {/* Cantidad de preguntas */}
         <View style={[estilos.campo, { backgroundColor: tema.superficie, borderColor: tema.borde }]}>
           <Text style={[estilos.etiqueta, { color: tema.texto }]}>Cantidad de preguntas</Text>
           <TextInput
-            style={[estilos.input, { color: tema.texto, borderColor: tema.borde }]}
+            style={[estilos.input, { color: tema.texto, borderColor: tema.borde, backgroundColor: tema.fondo }]}
             value={cantidadPreguntas}
             onChangeText={setCantidadPreguntas}
             keyboardType="number-pad"
             placeholderTextColor={tema.textoDeshabilitado}
-            placeholder="10"
+            placeholder={`1 - ${archivo.totalPreguntas}`}
           />
         </View>
 
@@ -69,10 +162,10 @@ export default function PantallaConfiguracion() {
           {tiempoLimitado && (
             <View style={estilos.subCampo}>
               <Text style={[estilos.subEtiqueta, { color: tema.textoSecundario }]}>
-                Segundos por pregunta (30-120)
+                Segundos por pregunta ({MIN_SEGUNDOS_POR_PREGUNTA}-{MAX_SEGUNDOS_POR_PREGUNTA})
               </Text>
               <TextInput
-                style={[estilos.input, { color: tema.texto, borderColor: tema.borde }]}
+                style={[estilos.input, { color: tema.texto, borderColor: tema.borde, backgroundColor: tema.fondo }]}
                 value={segundosPorPregunta}
                 onChangeText={setSegundosPorPregunta}
                 keyboardType="number-pad"
@@ -80,7 +173,7 @@ export default function PantallaConfiguracion() {
                 placeholder="60"
               />
               <Text style={[estilos.tiempoTotal, { color: tema.secundario }]}>
-                Tiempo total: {Math.floor((parseInt(cantidadPreguntas) || 0) * (parseInt(segundosPorPregunta) || 0) / 60)}m {((parseInt(cantidadPreguntas) || 0) * (parseInt(segundosPorPregunta) || 0)) % 60}s
+                Tiempo total: {formatearTiempo(tiempoTotal)}
               </Text>
             </View>
           )}
@@ -111,16 +204,13 @@ export default function PantallaConfiguracion() {
             />
           </View>
         </View>
-      </View>
+      </ScrollView>
 
       {/* Boton iniciar */}
       <View style={estilos.piePagina}>
         <TouchableOpacity
           style={[estilos.botonIniciar, { backgroundColor: tema.primario }]}
-          onPress={() => {
-            /* Se implementara en Fase 9/10 */
-            router.push('/examen');
-          }}
+          onPress={manejarIniciar}
           activeOpacity={0.8}
         >
           <Text style={estilos.textoBotonIniciar}>Iniciar examen</Text>
@@ -154,8 +244,15 @@ function crearEstilos(tema: ReturnType<typeof usarTema>) {
     },
     contenido: {
       flex: 1,
+    },
+    contenidoScroll: {
       padding: espaciado.lg,
       gap: espaciado.lg,
+    },
+    nombreArchivo: {
+      fontSize: fuentes.xl,
+      fontWeight: '600',
+      textAlign: 'center',
     },
     infoTotal: {
       fontSize: fuentes.sm,
