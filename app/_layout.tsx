@@ -22,8 +22,8 @@ export default function LayoutRaiz() {
         <Stack.Screen name="index" />
         <Stack.Screen name="archivos" />
         <Stack.Screen name="configuracion" />
-        <Stack.Screen name="examen" options={{ gestureEnabled: false }} />
-        <Stack.Screen name="resultados" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="examen" options={{ gestureEnabled: false, animation: 'fade' }} />
+        <Stack.Screen name="resultados" options={{ gestureEnabled: false, animation: 'fade' }} />
         <Stack.Screen name="revision" />
         <Stack.Screen name="historial" />
         <Stack.Screen name="ejemplos" options={{ presentation: 'modal' }} />
