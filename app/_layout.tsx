@@ -1,24 +1,34 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+/**
+ * Layout raiz de la aplicacion.
+ * Configura la navegacion Stack principal y el proveedor de tema.
+ */
+
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { TemaProveedor } from '@/src/tema';
 
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
-
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
-
+export default function LayoutRaiz() {
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+    <TemaProveedor forzarOscuro={true}>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          animation: 'slide_from_right',
+          contentStyle: { backgroundColor: '#0F172A' },
+        }}
+      >
+        <Stack.Screen name="index" />
+        <Stack.Screen name="archivos" />
+        <Stack.Screen name="configuracion" />
+        <Stack.Screen name="examen" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="resultados" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="revision" />
+        <Stack.Screen name="historial" />
+        <Stack.Screen name="ejemplos" options={{ presentation: 'modal' }} />
       </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+      <StatusBar style="light" />
+    </TemaProveedor>
   );
 }
